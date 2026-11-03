@@ -4,6 +4,8 @@
 
 Inputs are state histories: the cumulative gas meter, the thermostat's hvac_action/preset_mode,
 humidity in hot-water rooms (showers and taps) and the kitchen (hob), and optionally 5-minute electricity means.
+A humidity value of None marks the sensor unavailable. A gas reading may carry a third value, when the meter
+last reported it unchanged.
 """
 import bisect
 import datetime as dt
@@ -20,8 +22,10 @@ HOB_AFTER_SHOWER = 1800  # bathroom steam reaching the kitchen is not cooking
 OVEN_KW = 1.5            # an electric load above this for most of a kitchen event = oven, not hob
 MIN_EVENT = 180          # shortest event rates are learned from
 MIN_HOB = 120            # shortest kitchen rise taken as a hob session: a kettle-filled pan steams within minutes
+SENSOR_GAP = 600         # a humidity sensor away this long (battery, re-pair) reads wrong when it comes back:
+SENSOR_SETTLE = 1800     # warmed by handling, its humidity climbs back for an hour, so skip its first half hour
 MIN_SHOWER = 60          # brief hot-water draws in a shower room still claim their share of a slot
-TAP_MAX = 300            # a shower-room event shorter than this is a tap (basin fill, hand wash), not a shower
+SHOWER_RISE = 20         # a shower always steams the bathroom (+33..42 points); basin draws lift it +6..12
 MAX_KW = {'dhw': 35.0, 'tap': 35.0, 'hob': 3.0}  # evidence above these is something else (a domestic burner tops out ~3 kW)
 
 # Pans filled from the kettle: a short burst (5-minute max >= 2.5 kW for at most two buckets, then the load
@@ -62,9 +66,36 @@ class Slot:
     parts: dict = field(default_factory=dict)
 
 
-def detect(samples: list[tuple[float, float]], kind: str, rise: float, within: float, settle: float,
+def settled(samples: list[tuple[float, float | None]]) -> list[list[tuple[float, float]]]:
+    """Runs of available readings, each starting once the sensor has settled after a long absence."""
+    runs, run, gone, until = [], [], None, float('-inf')
+    for t, v in samples:
+        if v is None:
+            if gone is None:
+                gone = t
+            continue
+        if gone is not None:
+            if run:
+                runs.append(run)
+                run = []
+            if t - gone >= SENSOR_GAP:
+                until = t + SENSOR_SETTLE
+            gone = None
+        if t >= until:
+            run.append((t, v))
+    if run:
+        runs.append(run)
+    return runs
+
+
+def detect(samples: list[tuple[float, float | None]], kind: str, rise: float, within: float, settle: float,
            drop: float, min_len: float = MIN_EVENT) -> list[Event]:
     """Humidity rises fast enough to be a shower or cooking."""
+    return [e for run in settled(samples) for e in _detect(run, kind, rise, within, settle, drop, min_len)]
+
+
+def _detect(samples: list[tuple[float, float]], kind: str, rise: float, within: float, settle: float,
+            drop: float, min_len: float) -> list[Event]:
     times = [t for t, _ in samples]
     out, ev, floor = [], None, float('-inf')
     for j, (t, v) in enumerate(samples):
@@ -125,7 +156,7 @@ def events(showers: list[list], hobs: list[list], power: list[tuple] | None,
            climate: list[tuple[float, str, str]] | None = None) -> list[Event]:
     evs = [e for s in showers for e in detect(s, 'shower', **SHOWER, min_len=MIN_SHOWER)]
     for e in evs:
-        if e.end - e.start < TAP_MAX:
+        if e.rise < SHOWER_RISE:
             e.kind = 'tap'
     after_shower = lambda t: any(0 <= t - x.end <= HOB_AFTER_SHOWER or x.start <= t <= x.end
                                  for x in evs if x.kind == 'shower')
@@ -208,7 +239,7 @@ def _minus(xs, ys):
     return out
 
 
-def build_slots(t0: float, t1: float, gas: list[tuple[float, float]], climate: list[tuple[float, str, str]],
+def build_slots(t0: float, t1: float, gas: list[tuple], climate: list[tuple[float, str, str]],
                 evs: list[Event], kw: dict[str, float]) -> dict[float, Slot]:
     """Slots in [t0, t1) with activity seconds and the gas booked for them."""
     t0 = int(t0 // SLOT) * SLOT
@@ -227,12 +258,16 @@ def build_slots(t0: float, t1: float, gas: list[tuple[float, float]], climate: l
     def expected(s: Slot) -> float:
         return (kw['heat'] * s.heat + kw['dhw'] * s.shower + kw['tap'] * s.tap + kw['hob'] * s.hob) / 3600
 
-    # Each reading books the slots since the previous reading; zero-gas slots produce no reading
+    # Each reading books the slots since the meter last reported the previous value: a flat meter burnt nothing.
+    # It always books at least the half hour before it, which may have ended just before an unchanged report.
+    # Without report times the gas may belong to any slot since the previous reading.
     single = set()
-    for (p, v0), (u, v1) in zip(gas, gas[1:]):
+    for (p, v0, *seen), (u, v1, *_) in zip(gas, gas[1:]):
         delta = v1 - v0
         if delta <= 0:
             continue
+        if seen and seen[0] is not None:
+            p = max(p, min(seen[0], u - SLOT))
         covered = [k for k in range(int(p // SLOT) * SLOT, int(u // SLOT) * SLOT, SLOT) if k in slots]
         if not covered:
             continue

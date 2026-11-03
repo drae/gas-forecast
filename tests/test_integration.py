@@ -322,3 +322,31 @@ async def test_statistics_continue_across_rebuild_windows(hass: HomeAssistant):
         for h, s in later[use].items():
             assert s == pytest.approx(full[use][h])
     assert c.saved['sums']['2026-10-24']['heating'] == pytest.approx(5.492 + 5.136, abs=1e-3)
+
+
+async def test_history_reads_meter_reports_and_sensor_gaps(hass: HomeAssistant):
+    """The recorder query keeps the meter's last unchanged report and marks humidity gaps as None."""
+    from homeassistant.components.recorder import get_instance
+    from pytest_homeassistant_custom_component.components.recorder.common import async_wait_recording_done
+
+    from custom_components.gas_forecast.coordinator import GasForecastCoordinator
+    entry = MockConfigEntry(domain=DOMAIN, data={**CONF, 'hob_humidity': ['sensor.k']})
+    entry.add_to_hass(hass)
+    start = dt_util.utcnow() - dt.timedelta(minutes=1)
+    hass.states.async_set('sensor.gas', '1.0')
+    hass.states.async_set('sensor.k', '50')
+    hass.states.async_set('climate.thermostat', 'auto', {'hvac_action': 'idle'})
+    await async_wait_recording_done(hass)
+    hass.states.async_set('sensor.gas', '1.0')  # reported, unchanged
+    hass.states.async_set('sensor.k', 'unavailable')
+    await async_wait_recording_done(hass)
+    reported = hass.states.get('sensor.gas').last_reported.timestamp()
+    hass.states.async_set('sensor.gas', '1.5')
+    hass.states.async_set('sensor.k', '52')
+    await async_wait_recording_done(hass)
+
+    hist = await get_instance(hass).async_add_executor_job(GasForecastCoordinator(hass, entry)._history, start)
+    (t0, v0, seen0), (_, v1, _) = hist['gas']
+    assert (v0, v1) == (1.0, 1.5) and seen0 == pytest.approx(reported) and seen0 > t0
+    assert [v for _, v in hist['hob'][0]] == [50.0, None, 52.0]
+    assert hist['shower'] == []

@@ -46,16 +46,19 @@ Smart meters book gas in half-hour slots, a few seconds after each one ends. A c
 | Use | Seen as |
 | --- | --- |
 | Heating | the thermostat's `hvac_action` is `heating` (outside showers: a combi serves hot water first) |
-| Hot water: shower | a fast humidity rise in a shower room: 5 points within 5 minutes, until the peak, lasting 5 minutes or more |
-| Hot water: tap | the same rise lasting 1 to 5 minutes: a basin fill or hand wash. Taps have their own rate: the burner runs flat out with no mixing down, and a short draw also heats up the exchanger and pipes |
+| Hot water: shower | a fast humidity rise in a shower room (5 points within 5 minutes, until the peak) that climbs 20 points or more: a shower always steams the room |
+| Hot water: tap | the same rise lasting a minute or more that stays under 20 points: a basin fill or hand wash. Taps have their own rate: the burner runs flat out with no mixing down, and a short draw also heats up the exchanger and pipes |
 | Hob | a fast humidity rise in the kitchen: 6 points within 15 minutes. Not counted within 30 minutes of a shower (steam drifting) or when the electricity load stays above 1.5 kW for most of it (an electric oven) |
 | Hob, from the kettle | pans filled from the kettle: a short burst (5-minute max of 2.5 kW or more for up to 10 minutes, then the load drops) with the boiler idle, no shower in the last 30 minutes and no humidity-detected hob. It only claims gas booked by the half-hour slot's own reading (at least 0.1 kWh) with nothing else to explain it, so a kettle for tea claims nothing. No rates are learned from these, since the timing is a guess |
 | Anything else | gas with nothing seen counts as hot water from taps (washing up, the kitchen sink) |
 
+A humidity sensor that comes back after 10 minutes or more away (a battery change, a re-pair) is ignored for its first 30 minutes: it has been handled and warmed, and its humidity climbs back for an hour.
+
 When a slot holds more than one use, its gas is shared in proportion to each one's time multiplied by its rate (kW).
 
 - **Rates are learned** from clean evidence: slots with heating only, and showers, taps or hob sessions with nothing else happening. They are pooled over 30 days and start from 17 kW (heating), 14 kW (shower), 17 kW (tap) and 1.3 kW (hob).
-- **Late readings:** a reading that books several slots at once is shared by their expected gas. If the activity can't explain it, the day is flagged as lumped.
+- **Flat meter:** the meter reports its total every few minutes and only changes when gas is burnt. A reading books the slots since the meter last reported the old total unchanged, which is normally just its own half hour.
+- **Late readings:** a reading that books several slots at once (the meter went quiet) is shared by their expected gas. If the activity can't explain it, the day is flagged as lumped.
 - **Reliable days** are the ones the heating-only model fits on. A day counts when it is complete, not lumped, and its slots add up to within 0.5 kWh of the meter's daily total.
 
 The split is rebuilt from the recorder's state history on every refresh, from the last stored day (at least two days back). The first run backfills the 10 days the recorder keeps.

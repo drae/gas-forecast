@@ -215,3 +215,36 @@ def test_hourly_statistics_add_up_to_the_days():
     # the 19:00 slot's boost lands in the 19:00 hour
     h19 = dict(rows['boost_heating'])
     assert h19[ts('2026-10-24T19:00')] - h19[ts('2026-10-24T18:00')] == pytest.approx(5.136)
+
+
+def test_sensor_back_from_a_long_gap_is_not_hob():
+    from fixtures_evenings import BATHROOM_3, KITCHEN_3
+    evs = split.events([BATHROOM_3], [KITCHEN_3], None)
+    assert [(e.kind, e.start) for e in evs] == [('tap', ts('2026-11-03T13:31:31'))]
+    # the same readings with no gap would pass for cooking
+    joined = [(t, v) for t, v in KITCHEN_3 if v is not None]
+    assert [e.kind for e in split.detect(joined, 'hob', **split.HOB, min_len=split.MIN_HOB)] == ['hob']
+
+
+def test_short_gap_is_not_settled():
+    t = ts('2026-11-03T12:00')
+    rows = [(t, 50.0), (t + 60, None), (t + 120, 50.0), (t + 300, 54.0), (t + 500, 58.0), (t + 700, 60.0),
+            (t + 1100, 60.0)]
+    assert [e.kind for e in split.detect(rows, 'hob', **split.HOB, min_len=split.MIN_HOB)] == ['hob']
+
+
+def test_basin_draw_takes_the_reading_after_a_flat_meter():
+    from fixtures_evenings import BATHROOM_3, CLIMATE_3, GAS_3, KITCHEN_3
+    evs = split.events([BATHROOM_3], [KITCHEN_3], None, CLIMATE_3)
+    slots = split.build_slots(ts('2026-11-03T09:00'), ts('2026-11-03T15:00'), GAS_3, CLIMATE_3, evs, KW)
+    assert {k for k, s in slots.items() if s.gas} == {ts('2026-11-03T13:30')}
+    day = split.daily(slots, KW, TZ)[dt.date(2026, 11, 3)]
+    assert day['hob'] == 0 and day['heating'] == 0
+    assert day['hot_water'] == pytest.approx(0.647)
+
+
+def test_unchanged_report_just_after_the_half_hour_keeps_its_slot():
+    t = ts('2026-11-03T13:30')
+    gas = [(t - 3 * 3600, 0.0, t + 1810), (t + 1827, 0.6)]
+    slots = split.build_slots(t - 3 * 3600, t + 3600, gas, [(t - 3 * 3600, 'idle', 'none')], [], KW)
+    assert {k for k, s in slots.items() if s.gas} == {t}

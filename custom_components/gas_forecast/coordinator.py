@@ -191,20 +191,33 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
 
     def _history(self, start: dt.datetime) -> dict:
         """State history for the gas split (recorder executor)."""
-        def numeric(states):
+        def numeric(states, gaps=False):
             out = []
             for st in states:
                 try:
                     out.append((st.last_updated.timestamp(), float(st.state)))
+                except (TypeError, ValueError):
+                    if gaps:
+                        out.append((st.last_updated.timestamp(), None))
+            return out
+
+        def readings(states):
+            """Meter readings with when each was last reported unchanged."""
+            out = []
+            for st in states:
+                try:
+                    out.append((st.last_updated.timestamp(), float(st.state), st.last_reported.timestamp()))
                 except (TypeError, ValueError):
                     continue
             return out
 
         shower = list(self.conf.get(CONF_SHOWER_HUMIDITY) or [])
         hob = list(self.conf.get(CONF_HOB_HUMIDITY) or [])
-        ids = [self.conf[CONF_GAS], *shower, *hob]
-        num = history.get_significant_states(self.hass, start, None, ids, include_start_time_state=True,
-                                             significant_changes_only=False, no_attributes=True)
+        num = history.get_significant_states(self.hass, start, None, [*shower, *hob], include_start_time_state=True,
+                                             significant_changes_only=False, no_attributes=True) if shower or hob else {}
+        # only this query carries last_reported
+        meter = history.state_changes_during_period(self.hass, start, None, self.conf[CONF_GAS], no_attributes=True,
+                                                    include_start_time_state=True)
         clim = history.get_significant_states(self.hass, start, None, [self.conf[CONF_CLIMATE]],
                                               include_start_time_state=True, significant_changes_only=False)
         climate = [(st.last_updated.timestamp(), st.attributes.get('hvac_action'), st.attributes.get('preset_mode'))
@@ -217,9 +230,9 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
                      if r.get('mean') is not None]
         return {
             'start': start.timestamp(),
-            'gas': numeric(num.get(self.conf[CONF_GAS], [])),
-            'shower': [numeric(num.get(e, [])) for e in shower],
-            'hob': [numeric(num.get(e, [])) for e in hob],
+            'gas': readings(meter.get(self.conf[CONF_GAS], [])),
+            'shower': [numeric(num.get(e, []), gaps=True) for e in shower],
+            'hob': [numeric(num.get(e, []), gaps=True) for e in hob],
             'climate': climate,
             'power': power,
         }

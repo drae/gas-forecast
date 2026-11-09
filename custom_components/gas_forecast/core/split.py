@@ -36,6 +36,10 @@ KETTLE_AFTER_KW = 0.8
 KETTLE_HOB = 1200
 KETTLE_GAS = 0.1  # the slot after the kettle must have its own reading of at least this, unexplained
 KETTLE_STEAM = 300  # a kitchen rise that starts while the kettle boils and peaks this soon after it stops is its steam
+# Steam reaches the sensor after the kettle clicks off and slow drift back-dates a rise's start, so go by the peak:
+# a small rise peaking this soon after a kettle, in a slot the boiler already explains, is no evidence of cooking.
+STEAM_PEAK = 450
+STEAM_RISE = 10
 
 # Priors (kW) and their weight in hours of evidence. A tap runs the burner flat out with no mixing down,
 # and a short draw also pays for heating the exchanger and pipes: 25 Oct basin fill 0.647 kWh in 140 s.
@@ -162,11 +166,14 @@ def events(showers: list[list], hobs: list[list], power: list[tuple] | None,
                                  for x in evs if x.kind == 'shower')
     bursts = kettles(power) if power else []
     boils = [(ks, kettle_off(power, ke)) for ks, ke in bursts]
+    heat = _intervals([(t, a == 'heating') for t, a, _ in climate], float('-inf'), float('inf')) if climate else []
     for s in hobs:
         for e in detect(s, 'hob', **HOB, min_len=MIN_HOB):
             if after_shower(e.start):
                 continue
             if any(ks <= e.start <= off and e.end <= off + KETTLE_STEAM for ks, off in boils):
+                continue
+            if e.rise < STEAM_RISE and any(ks <= e.end <= off + STEAM_PEAK for ks, off in boils) and _heated(e, heat):
                 continue
             if power:
                 inside = [p[1] for p in power if e.start - 300 < p[0] < e.end]
@@ -174,7 +181,6 @@ def events(showers: list[list], hobs: list[list], power: list[tuple] | None,
                     continue
             evs.append(e)
     if power and hobs:
-        heat = _intervals([(t, a == 'heating') for t, a, _ in climate], float('-inf'), float('inf')) if climate else []
         for ks, ke in bursts:
             if after_shower(ke) or any(ks - 600 <= e.start <= ke + KETTLE_HOB for e in evs if e.kind == 'hob'):
                 continue
@@ -182,6 +188,12 @@ def events(showers: list[list], hobs: list[list], power: list[tuple] | None,
                 continue
             evs.append(Event('hob', ke, ke + KETTLE_HOB, 0.0, inferred=True))
     return sorted(evs, key=lambda e: e.start)
+
+
+def _heated(e: Event, heat: list[tuple[float, float]]) -> bool:
+    """Whether the boiler ran for heating in any meter slot the event touches."""
+    a, b = int(e.start // SLOT) * SLOT, (int(e.end // SLOT) + 1) * SLOT
+    return any(x < b and y > a for x, y in heat)
 
 
 def _intervals(changes: list[tuple[float, bool]], t0: float, t1: float) -> list[tuple[float, float]]:

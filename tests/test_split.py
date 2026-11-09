@@ -199,6 +199,23 @@ def test_poached_egg_without_the_grill_is_still_hob():
     assert [(e.kind, e.inferred, e.start) for e in evs] == [('hob', False, ts('2026-10-26T20:37:39'))]
 
 
+def test_kettle_steam_peaking_after_the_boil_is_not_hob_in_a_heated_slot():
+    from fixtures_evenings import CLIMATE_9, GAS_9, KITCHEN_9, POWER_9
+    evs = split.events([], [KITCHEN_9], POWER_9, CLIMATE_9)
+    assert [e for e in evs if not e.inferred] == []
+    slots = split.build_slots(ts('2026-11-09T11:00'), ts('2026-11-09T16:00'), GAS_9, CLIMATE_9, evs, KW)
+    assert not any(split.claimed(slots, e) for e in evs if e.inferred)
+    day = split.daily(slots, KW, TZ)[dt.date(2026, 11, 9)]
+    assert day['hob'] == 0
+    assert day['heating'] == pytest.approx(1.797 + 2.903, abs=1e-3)
+
+
+def test_small_rise_after_a_kettle_stays_hob_without_heating():
+    from fixtures_evenings import KITCHEN_9, POWER_9
+    evs = split.events([], [KITCHEN_9], POWER_9, [(ts('2026-11-09T09:00'), 'idle', 'none')])
+    assert [e.start for e in evs if not e.inferred] == [ts('2026-11-09T11:25:55'), ts('2026-11-09T15:31:23')]
+
+
 def test_hourly_statistics_add_up_to_the_days():
     evs = split.events([BATHROOM_24], [KITCHEN_24], POWER_24, CLIMATE_24)
     slots = split.build_slots(ts('2026-10-24T16:30'), ts('2026-10-25T00:30'), GAS_24, CLIMATE_24, evs, KW)

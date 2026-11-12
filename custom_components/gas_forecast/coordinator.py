@@ -308,10 +308,10 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             m = gas.fitted(recs, n, today, splits)
             models[n] = m
             issued = saved['issued'].setdefault(n, {})
-            t2 = gas.t2_of(recs, today, temps)
+            temp = gas.temp_of(recs, today, temps)
             # only a day measured like the recorded ones is issued: it is scored against them
-            if m and t2 is not None and today in exact and today.isoformat() not in issued:
-                issued[today.isoformat()] = round(m.predict(t2), 3)
+            if m and temp is not None and today in exact and today.isoformat() not in issued:
+                issued[today.isoformat()] = round(m.predict(temp), 3)
             merged = dict(self._proxy.get(n, {}))
             merged.update({dt.date.fromisoformat(d): v for d, v in issued.items()})
             e14, e28 = gas.errors(recs, merged, today, 14), gas.errors(recs, merged, today, 28)
@@ -324,17 +324,17 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
         m = models.get(active)
         forecast = []
         for k in sorted(temps):
-            t2 = gas.t2_of(recs, k, temps)
-            if m and t2 is not None:
-                forecast.append({'date': k.isoformat(), 'kwh': round(m.predict(t2), 2),
+            temp = gas.temp_of(recs, k, temps)
+            if m and temp is not None:
+                forecast.append({'date': k.isoformat(), 'kwh': round(m.predict(temp), 2),
                                  'weather': 'forecast' if k in fc else 'recent'})
         return {
             'today': forecast[0]['kwh'] if forecast and forecast[0]['date'] == today.isoformat() else None,
             'forecast': forecast,
             'hourly_share': data.hourly_share(gas_rows, tz, today),
             'model': active,
-            'coefficients': {'a': round(m.a, 3), 'b': round(m.b, 3), 'base': m.base, 'days': m.days,
-                             'offset': round(m.offset, 3)} if m else None,
+            'coefficients': {'a': round(m.a, 3), 'b': round(m.b, 3), 'q': round(m.q, 4), 'base': m.base,
+                             'days': m.days, 'offset': round(m.offset, 3)} if m else None,
             'scores': {n: {k: (round(v, 2) if isinstance(v, float) else v) for k, v in s.items()} for n, s in scores.items()},
             'split_today': saved['split'].get(today.isoformat()),
             'split_yesterday': saved['split'].get((today - dt.timedelta(days=1)).isoformat()),

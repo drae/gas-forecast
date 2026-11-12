@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.gas_forecast.const import DOMAIN
+from custom_components.gas_forecast.core import gas
 
 CONF = {
     'gas_energy': 'sensor.gas',
@@ -28,6 +29,10 @@ def temp_of(day: dt.date) -> float:
     return 10 + 4 * math.sin(day.toordinal() / 5)
 
 
+def model_temp(day: dt.date) -> float:
+    return gas.weighted([temp_of(day - dt.timedelta(days=i)) for i in range(gas.LOOKBACK)])
+
+
 def synthetic(hass, start, end, ids, period, units, types):
     """Hourly rows from `start` to now: gas booked at 07:00, temperature constant per day."""
     tz = dt_util.get_default_time_zone()
@@ -38,9 +43,8 @@ def synthetic(hass, start, end, ids, period, units, types):
     while t < now:
         local = t.astimezone(tz)
         d = local.date()
-        t2 = (temp_of(d) + temp_of(d - dt.timedelta(days=1))) / 2
         if local.hour == 7:
-            total += A + B * max(0.0, BASE - t2)
+            total += A + B * max(0.0, BASE - model_temp(d))
         heat = 0.0 if local.hour == 1 else heat + (0.1 if local.hour == 7 else 0.0)
         ts = t.timestamp()
         out['sensor.gas'].append({'start': ts, 'sum': total})
@@ -97,18 +101,18 @@ async def test_setup_forecasts_and_scores(hass: HomeAssistant):
         await hass.async_block_till_done()
 
     today = dt_util.now().date()
-    t2 = (temp_of(today) + temp_of(today - dt.timedelta(days=1))) / 2
+    t = model_temp(today)
     st = hass.states.get('sensor.gas_forecast_today')
     assert st is not None, [s.entity_id for s in hass.states.async_all()]
     # the forecast uses (hi + lo) / 2 = the true mean, so every model should land on the line
-    assert float(st.state) == pytest.approx(A + B * max(0.0, BASE - t2), abs=0.3)
+    assert float(st.state) == pytest.approx(A + B * max(0.0, BASE - t), abs=0.3)
     assert len(st.attributes['forecast']) >= 10
     assert st.attributes['hourly_share'][7] == pytest.approx(1.0)
-    assert st.attributes['model'] in ('ols15', 'change_point', 'bayes')
+    assert st.attributes['model'] in ('ols15', 'change_point', 'bayes', 'bayes_curve')
 
     err = hass.states.get('sensor.gas_forecast_error')
     assert float(err.state) < 0.5
-    assert set(err.attributes['models']) == {'ols15', 'change_point', 'bayes', 'bayes_heating'}
+    assert set(err.attributes['models']) == {'ols15', 'change_point', 'bayes', 'bayes_heating', 'bayes_curve'}
 
     # Away tracking: off then back on accumulates minutes for today
     coordinator = entry.runtime_data
@@ -210,11 +214,11 @@ async def test_issued_forecast_is_the_hourly_mean(hass: HomeAssistant):
 
     c = entry.runtime_data
     today = dt_util.now().date()
-    t2 = (temp_of(today) + temp_of(today - dt.timedelta(days=1))) / 2
+    t = model_temp(today)
     m = c.saved['active']
-    assert c.saved['issued'][m][today.isoformat()] == pytest.approx(A + B * max(0.0, BASE - t2), abs=0.3)
+    assert c.saved['issued'][m][today.isoformat()] == pytest.approx(A + B * max(0.0, BASE - t), abs=0.3)
     st = hass.states.get('sensor.gas_forecast_today')
-    assert float(st.state) == pytest.approx(A + B * max(0.0, BASE - t2), abs=0.3)
+    assert float(st.state) == pytest.approx(A + B * max(0.0, BASE - t), abs=0.3)
     assert c._retry_unsub is None
     assert await hass.config_entries.async_unload(entry.entry_id)
 

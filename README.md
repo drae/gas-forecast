@@ -15,16 +15,27 @@ Every hour it:
 
 ## Models
 
-All three are degree-day regressions on the 2-day mean outdoor temperature (the house holds heat, so yesterday counts as much as today):
+All of them are degree-day regressions on a weighted outdoor temperature: today plus a fading memory of the days
+before (weights fall by e per day, over 6 days), because the house holds heat:
 
-`gas per day = a + b × max(0, base − t2)`
+`gas per day = a + b × d` with `d = max(0, base − temperature)`
+
+- `b` is the house's heat loss, kWh per degree-day. It depends on the building, so it carries over between winters.
+- `base` is the outdoor temperature where free heat (sun, people, appliances) covers the losses; it also holds the
+  setpoint. With `a` (hot water and hob), it sets the level, which changes with habits and the season and is learned
+  afresh each season.
 
 | Name | Fit |
 | --- | --- |
 | `ols15` | Least squares, base 15 °C, last 30 days from the first day using 5 kWh or more |
 | `change_point` | Least squares with the base temperature fitted (10–18 °C), last 30 days |
-| `bayes` | Base fitted, the whole season with older days fading (half-life 21 days), and a loose prior of 1.5 kWh/day + 3 kWh per degree-day so it gives sensible answers from the first days of the season |
+| `bayes` | Base fitted, the whole season with older days fading (half-life 21 days), and a prior of 1.5 ± 3 kWh/day and a slope of 4.8 ± 1 kWh per degree-day (winter 25/26), so it gives sensible answers from the first days of the season and when the weather turns colder than anything it has seen |
 | `bayes_heating` | As `bayes`, but fitted on heating gas only (from the gas split), plus the last 14 days' average hot water and hob gas. Scored on total gas like the others |
+| `bayes_curve` | As `bayes`, plus `q × d²`: each degree colder costs a little more than the last (the boiler condenses less, free heat matters less, cold days are windier). Prior slope 4.2 ± 1 and q 0.07 ± 0.04 (winter 25/26) |
+
+Window sun, wind, indoor temperature and hours with the heating off were tested as extra inputs (2025/26 and autumn
+2026 backtests) and left out: none improved the forecast. The indoor temperature follows the heating rather than
+driving it.
 
 ### Scoring
 

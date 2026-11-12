@@ -2,13 +2,18 @@
 # Copyright (c) 2026 Paul Owen
 """Daily gas forecast: candidate models, rolling-origin scoring and model choice."""
 import datetime as dt
+import math
 from dataclasses import dataclass
 
 from .model import Day, Model
 
-# Last winter's shape as a loose prior: baseline ~1.5 kWh/day, slope ~3 kWh per degree-day
-PRIOR = {'a': (1.5, 3.0), 'b': (3.0, 3.0)}
-PRIOR_HEATING = {'a': (0.0, 1.0), 'b': (3.0, 3.0)}
+# The slope is the house's heat loss, which carries over between winters (winter 25/26: 4.8 kWh per degree-day,
+# or 4.2 + 0.07 per degree-day² with the curve); the level (a, base) is learned afresh each season.
+PRIOR = {'a': (1.5, 3.0), 'b': (4.8, 1.0)}
+PRIOR_HEATING = {'a': (0.0, 1.0), 'b': (4.8, 1.0)}
+PRIOR_CURVE = {'a': (1.5, 3.0), 'b': (4.2, 1.0), 'q': (0.07, 0.04)}
+MEMORY_DAYS = 1.0  # time constant of the outdoor temperature's fading memory
+LOOKBACK = 6       # days in the weighted temperature
 BASELINE_DAYS = 14   # non-heating gas (hot water, hob) averaged over this many split days
 FIRST_HEATING_KWH = 5.0  # the card rule: fit from the first day of the window at or above this
 COLD_OFF_T2 = 12.0       # a cold day with no heating at all is an away day or missing data
@@ -23,10 +28,12 @@ def make(name: str) -> Model:
         return Model(fit_base=True, window=None, half_life=21, prior=PRIOR)
     if name == 'bayes_heating':
         return Model(fit_base=True, window=None, half_life=21, prior=PRIOR_HEATING)
+    if name == 'bayes_curve':
+        return Model(fit_base=True, window=None, half_life=21, prior=PRIOR_CURVE, curve=True)
     raise ValueError(name)
 
 
-CANDIDATES = ('ols15', 'change_point', 'bayes', 'bayes_heating')
+CANDIDATES = ('ols15', 'change_point', 'bayes', 'bayes_heating', 'bayes_curve')
 
 
 @dataclass
@@ -56,15 +63,25 @@ def build(gas: dict, temp: dict, heat_hours: dict | None, away: dict | None,
     return recs
 
 
-def t2_of(recs: dict, k: dt.date, temps: dict | None = None) -> float | None:
-    """2-day mean outdoor temperature; `temps` overrides recorded ones (forecasts)."""
+def weighted(temps: list[float | None]) -> float | None:
+    """Outdoor temperature with a fading memory, from daily means newest first (today, yesterday, ...).
+
+    Weights fall by e per MEMORY_DAYS. Today and yesterday are needed; older missing days are skipped.
+    """
+    if len(temps) < 2 or temps[0] is None or temps[1] is None:
+        return None
+    pairs = [(math.exp(-i / MEMORY_DAYS), t) for i, t in enumerate(temps[:LOOKBACK]) if t is not None]
+    return sum(w * t for w, t in pairs) / sum(w for w, _ in pairs)
+
+
+def temp_of(recs: dict, k: dt.date, temps: dict | None = None) -> float | None:
+    """Weighted outdoor temperature for day k; `temps` overrides recorded ones (forecasts)."""
     def t(d):
         if temps and d in temps:
             return temps[d]
         r = recs.get(d)
         return r.t if r else None
-    a, b = t(k), t(k - dt.timedelta(days=1))
-    return None if a is None or b is None else (a + b) / 2
+    return weighted([t(k - dt.timedelta(days=i)) for i in range(LOOKBACK)])
 
 
 def training(recs: dict, name: str, day: dt.date) -> list[Day]:
@@ -73,10 +90,10 @@ def training(recs: dict, name: str, day: dt.date) -> list[Day]:
     for k in sorted(recs):
         if not season_start(day) <= k < day:
             continue
-        r, t2 = recs[k], t2_of(recs, k)
-        if t2 is None:
+        r, temp = recs[k], temp_of(recs, k)
+        if temp is None:
             continue
-        out.append(Day(gas=None if r.excluded else r.gas, t2=t2, age=(day - k).days))
+        out.append(Day(gas=None if r.excluded else r.gas, temp=temp, age=(day - k).days))
     if name == 'ols15':
         out = [d for d in out if d.age <= 30]
         hot = [d.age for d in out if d.gas is not None and d.gas >= FIRST_HEATING_KWH]
@@ -118,11 +135,11 @@ def proxy_forecasts(recs: dict, name: str, start: dt.date, end: dt.date,
     out = {}
     k = start
     while k <= end:
-        r, t2 = recs.get(k), t2_of(recs, k)
-        if r and t2 is not None:
+        r, temp = recs.get(k), temp_of(recs, k)
+        if r and temp is not None:
             m = fitted(recs, name, k, splits)
             if m:
-                out[k] = m.predict(t2)
+                out[k] = m.predict(temp)
         k += dt.timedelta(days=1)
     return out
 

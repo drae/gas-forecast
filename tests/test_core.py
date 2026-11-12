@@ -4,6 +4,7 @@ import datetime as dt
 from zoneinfo import ZoneInfo
 
 import numpy as np
+import pytest
 
 from core import data, gas
 from core.model import Day, Model, _wls
@@ -51,19 +52,36 @@ def test_hourly_share_sums_to_one():
 
 def test_model_recovers_line_and_base():
     rng = np.random.default_rng(0)
-    t2 = rng.uniform(2, 18, 60)
-    days = [Day(gas=1.0 + 3.0 * max(0, 14.5 - t), t2=float(t)) for t in t2]
+    temps = rng.uniform(2, 18, 60)
+    days = [Day(gas=1.0 + 3.0 * max(0, 14.5 - t), temp=float(t)) for t in temps]
     m = Model(fit_base=True, window=None)
     assert m.fit(days)
     assert m.base == 14.5 and abs(m.a - 1) < 1e-6 and abs(m.b - 3) < 1e-6
 
 
 def test_prior_holds_early_season():
-    # Two warm days alone can't pin a slope: the prior keeps it near 3
-    days = [Day(gas=1.0, t2=16.0, age=1), Day(gas=1.2, t2=15.5, age=2)]
+    # Two warm days alone can't pin a slope: the prior keeps it near last winter's 4.8
+    days = [Day(gas=1.0, temp=16.0, age=1), Day(gas=1.2, temp=15.5, age=2)]
     m = Model(window=None, prior=gas.PRIOR, min_days=1)
     assert m.fit(days)
-    assert 2.0 < m.b < 4.0
+    assert 3.8 < m.b < 5.8
+
+
+def test_weighted_temperature():
+    assert gas.weighted([10.0, None]) is None
+    assert gas.weighted([10.0, 10.0, None, 10.0]) == 10.0
+    w = gas.weighted([4.0, 8.0])
+    assert 4.0 < w < 6.0  # today counts more than yesterday
+
+
+def test_curve_model_recovers_curvature():
+    rng = np.random.default_rng(2)
+    temps = rng.uniform(-2, 14, 80)
+    days = [Day(gas=2.0 + 4.0 * max(0, 13.5 - t) + 0.1 * max(0, 13.5 - t) ** 2, temp=float(t)) for t in temps]
+    m = Model(fit_base=True, window=None, curve=True)
+    assert m.fit(days)
+    assert m.base == 13.5 and abs(m.b - 4.0) < 1e-6 and abs(m.q - 0.1) < 1e-6
+    assert m.predict(3.5) == pytest.approx(2.0 + 40.0 + 10.0)
 
 
 def test_cold_day_without_heating_is_excluded():
@@ -102,14 +120,14 @@ def test_hour_means_need_the_whole_day():
 
 def test_base_is_chosen_with_the_prior_penalty():
     rng = np.random.default_rng(1)
-    t2 = rng.uniform(4, 16, 12)
-    days = [Day(gas=float(1.0 + 3.0 * max(0, 14 - t) + rng.normal(0, 1.5)), t2=float(t)) for t in t2]
+    temps = rng.uniform(4, 16, 12)
+    days = [Day(gas=float(1.0 + 3.0 * max(0, 14 - t) + rng.normal(0, 1.5)), temp=float(t)) for t in temps]
     prior = {'a': (1.5, 0.2), 'b': (6.0, 0.2)}
     m = Model(fit_base=True, window=None, prior=prior)
     assert m.fit(days)
 
     def objective(base):
-        X = np.column_stack([np.ones(len(days)), np.maximum(0.0, base - np.array([d.t2 for d in days]))])
+        X = np.column_stack([np.ones(len(days)), np.maximum(0.0, base - np.array([d.temp for d in days]))])
         return _wls(X, np.array([d.gas for d in days]), np.ones(len(days)), [1.5, 6.0], [0.2, 0.2])[1]
 
     assert objective(m.base) == min(objective(b) for b in np.arange(10.0, 18.01, 0.5))

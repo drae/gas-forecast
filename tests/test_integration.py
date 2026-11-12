@@ -23,6 +23,7 @@ CONF = {
     'weather': 'weather.home',
 }
 A, B, BASE = 1.0, 3.0, 15.0
+LOCAL_OFFSET = 1.5  # the synthetic local sensor reads this much warmer than the weather's temperature
 
 
 def temp_of(day: dt.date) -> float:
@@ -47,8 +48,9 @@ def synthetic(hass, start, end, ids, period, units, types):
             total += A + B * max(0.0, BASE - model_temp(d))
         heat = 0.0 if local.hour == 1 else heat + (0.1 if local.hour == 7 else 0.0)
         ts = t.timestamp()
-        out['sensor.gas'].append({'start': ts, 'sum': total})
+        out['sensor.gas'].append({'start': ts, 'sum': total, 'state': 1000.0 + total})
         out['sensor.outdoor'].append({'start': ts, 'mean': temp_of(d)})
+        out.setdefault('sensor.local', []).append({'start': ts, 'mean': temp_of(d) + LOCAL_OFFSET})
         out['sensor.heating_time'].append({'start': ts, 'max': heat})
         t += dt.timedelta(hours=1)
     return out
@@ -354,3 +356,41 @@ async def test_history_reads_meter_reports_and_sensor_gaps(hass: HomeAssistant):
     assert (v0, v1) == (1.0, 1.5) and seen0 == pytest.approx(reported) and seen0 > t0
     assert [v for _, v in hist['hob'][0]] == [50.0, None, 52.0]
     assert hist['shower'] == []
+
+
+async def test_local_sensor_learns_and_forecasts_through_the_offset(hass: HomeAssistant):
+    # the model learns on a sensor 1.5 °C warmer; forecasts are shifted by the learned offset, so they land on the line
+    await hass.config.async_update(time_zone='Europe/London')
+    await _weather(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data={**CONF, 'local_temperature': 'sensor.local'})
+    entry.add_to_hass(hass)
+    with patch('custom_components.gas_forecast.coordinator.statistics_during_period', side_effect=synthetic):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    st = hass.states.get('sensor.gas_forecast_today')
+    assert st.attributes['local_offset'] == pytest.approx(LOCAL_OFFSET, abs=0.01)
+    assert float(st.state) == pytest.approx(A + B * max(0.0, BASE - model_temp(dt_util.now().date())), abs=0.3)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_expected_today_follows_the_meter(hass: HomeAssistant):
+    await hass.config.async_update(time_zone='Europe/London')
+    await _weather(hass)
+    entry = MockConfigEntry(domain=DOMAIN, data=CONF)
+    entry.add_to_hass(hass)
+    with patch('custom_components.gas_forecast.coordinator.statistics_during_period', side_effect=synthetic):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    c = entry.runtime_data
+    midnight = c.data['midnight_reading']
+    assert midnight is not None
+    forecast = c.data['today']
+    assert c.data['hourly_share'][7] == pytest.approx(1.0)  # all of the synthetic gas is booked at 07:00
+    hass.states.async_set('sensor.gas', str(midnight + 12.5))
+    await hass.async_block_till_done()
+    st = hass.states.get('sensor.gas_forecast_expected_today')
+    now = dt_util.now()
+    rest = forecast if now.hour < 7 else forecast * (1 - now.minute / 60) if now.hour == 7 else 0.0
+    assert float(st.state) == pytest.approx(12.5 + rest, abs=0.05)
+    assert st.attributes['used'] == pytest.approx(12.5)
+    assert await hass.config_entries.async_unload(entry.entry_id)

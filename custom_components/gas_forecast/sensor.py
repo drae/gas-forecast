@@ -1,23 +1,27 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright (c) 2026 Paul Owen
-"""Sensors: today's gas forecast (with the daily forecast list) and the forecast error."""
+"""Sensors: today's gas forecast (with the daily forecast list), the expected total today and the forecast error."""
+import datetime as dt
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.const import UnitOfEnergy
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from . import GasForecastConfigEntry
-from .const import DOMAIN, STAT_IDS
+from .const import CONF_GAS, DOMAIN, STAT_IDS
 from .coordinator import GasForecastCoordinator
+from .core import data
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: GasForecastConfigEntry,
                             async_add_entities: AddConfigEntryEntitiesCallback) -> None:
     c = entry.runtime_data
-    entities = [GasForecastSensor(c), GasForecastErrorSensor(c)]
+    entities = [GasForecastSensor(c), GasExpectedTodaySensor(c), GasForecastErrorSensor(c)]
     if c._split_enabled():
         entities += [GasSplitSensor(c, use) for use in ('heating', 'hot_water', 'hob', 'boost')]
     async_add_entities(entities)
@@ -53,7 +57,51 @@ class GasForecastSensor(_Base):
     @property
     def extra_state_attributes(self):
         d = self.coordinator.data
-        return {k: d.get(k) for k in ('model', 'coefficients', 'forecast', 'hourly_share', 'updated')}
+        return {k: d.get(k) for k in ('model', 'coefficients', 'local_offset', 'forecast', 'hourly_share', 'updated')}
+
+
+class GasExpectedTodaySensor(_Base):
+    """Gas used so far today plus the forecast's usual share for the rest of the day.
+
+    Follows the meter between the hourly refits, and every few minutes as the rest of the day shrinks.
+    """
+    _attr_icon = 'mdi:fire-circle'
+
+    def __init__(self, coordinator: GasForecastCoordinator) -> None:
+        super().__init__(coordinator, 'expected_today')
+        self._meter = coordinator.conf[CONF_GAS]
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(async_track_state_change_event(self.hass, self._meter, self._changed))
+        self.async_on_remove(async_track_time_interval(self.hass, self._changed, dt.timedelta(minutes=5)))
+
+    @callback
+    def _changed(self, _event: Event[EventStateChangedData] | dt.datetime) -> None:
+        self.async_write_ha_state()
+
+    def _used(self) -> float | None:
+        d = self.coordinator.data
+        st = self.hass.states.get(self._meter)
+        if d.get('date') != dt_util.now().date().isoformat() or d.get('midnight_reading') is None or st is None:
+            return None
+        try:
+            return max(0.0, float(st.state) - d['midnight_reading'])
+        except ValueError:
+            return None
+
+    @property
+    def native_value(self):
+        d = self.coordinator.data
+        used = self._used()
+        if d.get('today') is None or used is None:
+            return None
+        return round(data.expected_total(d['today'], used, d.get('hourly_share'), dt_util.now()), 2)
+
+    @property
+    def extra_state_attributes(self):
+        used = self._used()
+        return {'used': round(used, 3) if used is not None else None, 'forecast': self.coordinator.data.get('today')}
 
 
 class GasForecastErrorSensor(_Base):

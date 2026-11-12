@@ -11,5 +11,5 @@
   "issue_tracker": "https://github.com/drae/gas-forecast/issues",
   "requirements": ["numpy>=1.26"],
   "single_config_entry": true,
-  "version": "0.5.0"
+  "version": "0.5.1"
 }

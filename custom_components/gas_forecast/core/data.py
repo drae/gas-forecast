@@ -74,3 +74,18 @@ def hour_means(hours: dict[float, float], tz: ZoneInfo, missing: int = 1) -> dic
         if len(v) >= round((end - start) / 3600) - missing:
             out[d] = sum(v) / len(v)
     return out
+
+
+def local_offset(local: dict[dt.date, float], main: dict[dt.date, float], today: dt.date,
+                 days: int = 30, min_days: int = 7) -> float | None:
+    """Mean of local minus main daily temperature over the last `days` days before today; None with too few."""
+    diffs = [local[k] - main[k] for k in local if k in main and today - dt.timedelta(days=days) <= k < today]
+    return sum(diffs) / len(diffs) if len(diffs) >= min_days else None
+
+
+def expected_total(forecast: float, used: float, share: list[float] | None, now: dt.datetime) -> float:
+    """Gas used so far today plus the forecast's usual share for the rest of the day (the current hour pro rata)."""
+    if not share:
+        return max(forecast, used)
+    done = sum(share[:now.hour]) + share[now.hour] * (now.minute + now.second / 60) / 60
+    return used + forecast * max(0.0, 1.0 - done)

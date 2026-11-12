@@ -7,7 +7,7 @@ from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResu
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
-from .const import (CONF_CLIMATE, CONF_GAS, CONF_HEATING_TIME, CONF_HOB_HUMIDITY, CONF_OUTDOOR,
+from .const import (CONF_CLIMATE, CONF_GAS, CONF_HEATING_TIME, CONF_HOB_HUMIDITY, CONF_LOCAL, CONF_OUTDOOR,
                     CONF_OUTDOOR_FALLBACK, CONF_POWER, CONF_SHOWER_HUMIDITY, CONF_WEATHER, DOMAIN)
 
 HUMIDITY = selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor', device_class='humidity', multiple=True))
@@ -21,6 +21,7 @@ SCHEMA = vol.Schema({
     vol.Required(CONF_GAS): selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor', device_class='energy')),
     vol.Required(CONF_OUTDOOR): selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor', device_class='temperature')),
     vol.Optional(CONF_OUTDOOR_FALLBACK): selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor', device_class='temperature')),
+    vol.Optional(CONF_LOCAL): selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor', device_class='temperature')),
     vol.Optional(CONF_HEATING_TIME): selector.EntitySelector(selector.EntitySelectorConfig(domain='sensor')),
     vol.Optional(CONF_CLIMATE): selector.EntitySelector(selector.EntitySelectorConfig(domain='climate')),
     vol.Required(CONF_WEATHER): selector.EntitySelector(selector.EntitySelectorConfig(domain='weather')),

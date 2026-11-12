@@ -33,9 +33,16 @@ before (weights fall by e per day, over 6 days), because the house holds heat:
 | `bayes_heating` | As `bayes`, but fitted on heating gas only (from the gas split), plus the last 14 days' average hot water and hob gas. Scored on total gas like the others |
 | `bayes_curve` | As `bayes`, plus `q × d²`: each degree colder costs a little more than the last (the boiler condenses less, free heat matters less, cold days are windier). Prior slope 4.2 ± 1 and q 0.07 ± 0.04 (winter 25/26) |
 
-Window sun, wind, indoor temperature and hours with the heating off were tested as extra inputs (2025/26 and autumn
-2026 backtests) and left out: none improved the forecast. The indoor temperature follows the heating rather than
-driving it.
+Window sun, wind, indoor temperature, electricity use and hours with the heating off were tested as extra inputs
+(2025/26 and autumn 2026 backtests) and left out: none improved the forecast. The indoor temperature follows the
+heating rather than driving it; electricity tracks being at home more than it adds heat.
+
+### Local temperature
+
+A sensor at the house (a garden sensor, say) knows things a weather service's temperature doesn't: the street, the
+wall it's on, the sun on it. With one set, the models learn on it, and forecasts are the weather entity's plus the
+learned difference (local minus weather, the mean over the last 30 days with at least 7). Today's measured hours
+come from the local sensor. In the autumn 2026 backtest this cut the error from 3.4 to 2.9 kWh/day.
 
 ### Scoring
 
@@ -91,7 +98,8 @@ Each is a kWh `sum`, so it works in the energy dashboard and in statistics graph
 
 | Entity | State | Attributes |
 | --- | --- | --- |
-| `sensor.gas_forecast_today` | whole-day gas forecast for today, kWh | `forecast` (list of `date`, `kwh`, `weather`: `forecast` or `recent`), `hourly_share` (share of a day's gas in each hour over the last 14 days), `model`, `coefficients` |
+| `sensor.gas_forecast_today` | whole-day gas forecast for today, kWh | `forecast` (list of `date`, `kwh`, `weather`: `forecast` or `recent`), `hourly_share` (share of a day's gas in each hour over the last 14 days), `model`, `coefficients`, `local_offset` |
+| `sensor.gas_forecast_expected_today` | gas used so far today plus the forecast's usual share for the rest of the day, kWh. Follows the meter and is updated every 5 minutes | `used` (gas so far today), `forecast` |
 | `sensor.gas_forecast_error` | the active model's mean absolute error over the last 28 days, kWh/day | `model`, `models` (each model's 14- and 28-day error and day counts) |
 | `sensor.gas_forecast_heating_today` | heating gas so far today, kWh | `boost` (heating gas while boost was on), `kw` (learned rates), `days` (the split for each of the last 35 days: `heating`, `hot_water`, `taps` (part of `hot_water`), `hob`, `boost`, `gas`, `reliable`), `yesterday`, `yesterday_reliable` |
 | `sensor.gas_forecast_hot_water_today` | hot water gas so far today, kWh | `shower` and `taps` (its two parts), `events` (showers and taps today), `yesterday`, `yesterday_reliable` |
@@ -119,6 +127,7 @@ Go to **Settings > Devices & services > Add integration > Gas forecast**, then p
 | Gas energy | A cumulative kWh sensor with long-term statistics (e.g. your smart meter's gas import) |
 | Outdoor temperature | Any outdoor temperature sensor with statistics |
 | Outdoor temperature fallback | Optional; fills days the main sensor is missing |
+| Local outdoor temperature | Optional; a sensor at the house that the models learn on (see Local temperature) |
 | Heating time today | Optional; hours, counting up and resetting at midnight (e.g. Hive heating time) |
 | Thermostat | Optional; used to spot away days |
 | Weather forecast | A weather entity with daily and hourly forecasts |

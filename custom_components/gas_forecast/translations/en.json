@@ -11,6 +11,7 @@
           "gas_energy": "Gas energy (kWh, cumulative)",
           "outdoor_temperature": "Outdoor temperature",
           "outdoor_temperature_fallback": "Outdoor temperature fallback",
+          "local_temperature": "Local outdoor temperature",
           "heating_time": "Heating time today (hours, resets at midnight)",
           "climate": "Thermostat",
           "weather": "Weather forecast",
@@ -24,7 +25,8 @@
           "climate": "Days with the thermostat off for 6 hours or more are left out of the fit.",
           "shower_humidity": "Fast rises mark showers, so the gas they use counts as hot water.",
           "hob_humidity": "Fast rises mark hob cooking.",
-          "electricity_power": "A long high load during a kitchen rise means the electric oven, not the hob."
+          "electricity_power": "A long high load during a kitchen rise means the electric oven, not the hob.",
+          "local_temperature": "A sensor at the house (e.g. in the garden). The model learns on it; forecasts are the weather entity's plus the learned difference."
         }
       }
     }
@@ -48,6 +50,9 @@
       },
       "boost_today": {
         "name": "Boost today"
+      },
+      "expected_today": {
+        "name": "Expected today"
       }
     }
   },
@@ -60,6 +65,7 @@
           "gas_energy": "Gas energy (kWh, cumulative)",
           "outdoor_temperature": "Outdoor temperature",
           "outdoor_temperature_fallback": "Outdoor temperature fallback",
+          "local_temperature": "Local outdoor temperature",
           "heating_time": "Heating time today (hours, resets at midnight)",
           "climate": "Thermostat",
           "weather": "Weather forecast",
@@ -73,7 +79,8 @@
           "climate": "Days with the thermostat off for 6 hours or more are left out of the fit.",
           "shower_humidity": "Fast rises mark showers, so the gas they use counts as hot water.",
           "hob_humidity": "Fast rises mark hob cooking.",
-          "electricity_power": "A long high load during a kitchen rise means the electric oven, not the hob."
+          "electricity_power": "A long high load during a kitchen rise means the electric oven, not the hob.",
+          "local_temperature": "A sensor at the house (e.g. in the garden). The model learns on it; forecasts are the weather entity's plus the learned difference."
         }
       }
     }

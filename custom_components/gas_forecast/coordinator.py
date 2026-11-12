@@ -18,9 +18,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import EnergyConverter
 
-from .const import (CONF_CLIMATE, CONF_GAS, CONF_HEATING_TIME, CONF_HOB_HUMIDITY, CONF_OUTDOOR,
+from .const import (CONF_CLIMATE, CONF_GAS, CONF_HEATING_TIME, CONF_HOB_HUMIDITY, CONF_LOCAL, CONF_OUTDOOR,
                     CONF_OUTDOOR_FALLBACK, CONF_POWER, CONF_SHOWER_HUMIDITY, CONF_WEATHER, DOMAIN,
-                    EVIDENCE_DAYS, HISTORY_DAYS, KEEP_AWAY_DAYS, KEEP_ISSUED_DAYS, KEEP_SPLIT_DAYS, SPLIT_ATTR_DAYS,
+                    EVIDENCE_DAYS, HISTORY_DAYS, KEEP_AWAY_DAYS, KEEP_ISSUED_DAYS, KEEP_SPLIT_DAYS, OFFSET_DAYS,
+                    SPLIT_ATTR_DAYS,
                     STAT_IDS, STORE_VERSION)
 from .core import data, gas, split
 
@@ -94,11 +95,13 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             'weather', 'get_forecasts', {'entity_id': entity, 'type': kind}, blocking=True, return_response=True)
         return [f for f in resp.get(entity, {}).get('forecast', []) if f.get('temperature') is not None]
 
-    async def _forecast_temps(self, tz: ZoneInfo, observed: dict[float, float]) -> tuple[dict[dt.date, float], set[dt.date]]:
+    async def _forecast_temps(self, tz: ZoneInfo, observed: dict[float, float],
+                              offset: float) -> tuple[dict[dt.date, float], set[dt.date]]:
         """Daily mean temperatures ahead, and the days measured like the recorded ones.
 
         A day the observed and hourly forecast hours cover gets their mean, as recorded days do; other days get the
-        daily forecast's (high + low) / 2, which is only shown, never scored.
+        daily forecast's (high + low) / 2, which is only shown, never scored. `offset` (local minus weather) is added
+        to every forecast value.
         """
         try:
             daily = await self._forecasts('daily')
@@ -114,12 +117,12 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
         for f in daily:
             k = dt_util.parse_datetime(f['datetime']).astimezone(tz).date()
             lo = f.get('templow')
-            out[k] = (f['temperature'] + lo) / 2 if lo is not None else f['temperature']
+            out[k] = ((f['temperature'] + lo) / 2 if lo is not None else f['temperature']) + offset
         hours = dict(observed)
         ahead = set()
         for f in hourly:
             t = dt_util.parse_datetime(f['datetime']).timestamp()
-            hours.setdefault(t, f['temperature'])
+            hours.setdefault(t, f['temperature'] + offset)
             ahead.add(dt.datetime.fromtimestamp(t, tz).date())
         exact = {k: v for k, v in data.hour_means(hours, tz).items() if k in ahead}
         out.update(exact)
@@ -133,12 +136,13 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
         self._flush_off(now)
         start = dt_util.start_of_local_day(gas.season_start(today) - dt.timedelta(days=2))
         ids = {self.conf[CONF_GAS], self.conf[CONF_OUTDOOR]}
-        for key in (CONF_OUTDOOR_FALLBACK, CONF_HEATING_TIME):
+        for key in (CONF_OUTDOOR_FALLBACK, CONF_LOCAL, CONF_HEATING_TIME):
             if self.conf.get(key):
                 ids.add(self.conf[key])
         stats = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period, self.hass, start, None, ids, 'hour', None, {'sum', 'mean', 'max'})
-        fc, exact = await self._forecast_temps(tz, self._observed_hours(stats, today))
+            statistics_during_period, self.hass, start, None, ids, 'hour', None, {'sum', 'mean', 'max', 'state'})
+        offset = self._local_offset(stats, tz, today)
+        fc, exact = await self._forecast_temps(tz, self._observed_hours(stats, today, offset), offset or 0.0)
         if today not in exact and self._retry_unsub is None and self._retry_day != today:
             # the weather entity is often not ready yet just after Home Assistant starts; once a day, then hourly
             self._retry_day = today
@@ -151,21 +155,32 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
                 self._history, dt_util.start_of_local_day(self._history_from(today)))
         work = copy.deepcopy({k: self.saved[k] for k in WORK})
         result, rows = await self.hass.async_add_executor_job(
-            self._compute, work, stats, fc, exact, away, hist, tz, today, now)
+            self._compute, work, stats, fc, exact, away, hist, tz, today, now, offset)
         self.saved.update(work)
         self._add_statistics(rows)
         await self._store.async_save(self.saved)
         return result
 
-    def _observed_hours(self, stats: dict, today: dt.date) -> dict[float, float]:
-        """Today's recorded hourly outdoor means, the fallback sensor filling hours the main one lacks."""
+    def _observed_hours(self, stats: dict, today: dt.date, offset: float | None) -> dict[float, float]:
+        """Today's recorded hourly outdoor means: the local sensor's when it is in use, other sensors (shifted by the
+        offset) filling hours it lacks."""
         since = dt_util.start_of_local_day(today).timestamp()
         out: dict[float, float] = {}
-        for key in (CONF_OUTDOOR, CONF_OUTDOOR_FALLBACK):
+        keys = ((CONF_LOCAL, 0.0), (CONF_OUTDOOR, offset), (CONF_OUTDOOR_FALLBACK, offset)) if offset is not None \
+            else ((CONF_OUTDOOR, 0.0), (CONF_OUTDOOR_FALLBACK, 0.0))
+        for key, shift in keys:
             for r in stats.get(self.conf.get(key), []) if self.conf.get(key) else []:
                 if r['start'] >= since and r.get('mean') is not None:
-                    out.setdefault(r['start'], r['mean'])
+                    out.setdefault(r['start'], r['mean'] + shift)
         return out
+
+    def _local_offset(self, stats: dict, tz: ZoneInfo, today: dt.date) -> float | None:
+        """Local minus weather daily mean temperature over recent days; None when no local sensor or too few days."""
+        if not self.conf.get(CONF_LOCAL):
+            return None
+        local = data.daily_mean(stats.get(self.conf[CONF_LOCAL], []), tz)
+        main = data.daily_mean(stats.get(self.conf[CONF_OUTDOOR], []), tz)
+        return data.local_offset(local, main, today, OFFSET_DAYS)
 
     def _add_statistics(self, rows: dict[str, list[tuple[int, float]]] | None) -> None:
         """Write the split's hourly sums; rebuilt hours replace what was there."""
@@ -272,13 +287,16 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
         return {'kw': {k: round(v, 2) for k, v in kw.items()}, 'events': today_evs}, rows
 
     def _compute(self, saved: dict, stats: dict, fc: dict, exact: set, away: dict, hist: dict | None, tz: ZoneInfo,
-                 today: dt.date, now: dt.datetime) -> tuple[dict, dict | None]:
+                 today: dt.date, now: dt.datetime, offset: float | None) -> tuple[dict, dict | None]:
         """The refit, in the executor: changes only `saved`, a copy of the stored state."""
         rows = lambda key: stats.get(self.conf.get(key), []) if self.conf.get(key) else []
         gas_rows = rows(CONF_GAS)
-        temp = data.daily_mean(rows(CONF_OUTDOOR), tz)
-        for k, v in data.daily_mean(rows(CONF_OUTDOOR_FALLBACK), tz).items():
-            temp.setdefault(k, v)
+        # the model learns on the local sensor when it is in use; other sensors fill its gaps, shifted by the offset
+        shift = offset or 0.0
+        temp = data.daily_mean(rows(CONF_LOCAL), tz) if offset is not None else {}
+        for key in (CONF_OUTDOOR, CONF_OUTDOOR_FALLBACK):
+            for k, v in data.daily_mean(rows(key), tz).items():
+                temp.setdefault(k, v + shift)
         heat = data.daily_running_max(rows(CONF_HEATING_TIME), tz) if self.conf.get(CONF_HEATING_TIME) else None
         lts_gas = data.daily_from_sum(gas_rows, tz)
         recs = gas.build(lts_gas, temp, heat, away)
@@ -332,6 +350,9 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             'today': forecast[0]['kwh'] if forecast and forecast[0]['date'] == today.isoformat() else None,
             'forecast': forecast,
             'hourly_share': data.hourly_share(gas_rows, tz, today),
+            'date': today.isoformat(),
+            'midnight_reading': self._midnight_reading(gas_rows, today),
+            'local_offset': round(offset, 2) if offset is not None else None,
             'model': active,
             'coefficients': {'a': round(m.a, 3), 'b': round(m.b, 3), 'q': round(m.q, 4), 'base': m.base,
                              'days': m.days, 'offset': round(m.offset, 3)} if m else None,
@@ -342,6 +363,12 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             'split_info': split_info,
             'updated': now.isoformat(),
         }, rows
+
+    @staticmethod
+    def _midnight_reading(gas_rows: list[dict], today: dt.date) -> float | None:
+        """The meter's reading at local midnight: the state at the end of yesterday's last hour."""
+        midnight = dt_util.start_of_local_day(today).timestamp()
+        return next((r['state'] for r in gas_rows if r['start'] == midnight - 3600 and r.get('state') is not None), None)
 
     def _split_days(self, saved: dict, today: dt.date) -> dict:
         """The last SPLIT_ATTR_DAYS days of the split, rounded, for charts that cover more than the statistics do."""

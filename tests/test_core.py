@@ -131,3 +131,23 @@ def test_base_is_chosen_with_the_prior_penalty():
         return _wls(X, np.array([d.gas for d in days]), np.ones(len(days)), [1.5, 6.0], [0.2, 0.2])[1]
 
     assert objective(m.base) == min(objective(b) for b in np.arange(10.0, 18.01, 0.5))
+
+
+def test_local_offset_needs_a_week():
+    today = dt.date(2026, 11, 12)
+    main = {today - dt.timedelta(days=i): 5.0 for i in range(1, 40)}
+    local = {k: v + 1.0 for k, v in main.items()}
+    assert data.local_offset(local, main, today) == pytest.approx(1.0)
+    few = {k: v for k, v in local.items() if (today - k).days <= 6}
+    assert data.local_offset(few, main, today) is None
+
+
+def test_expected_total_adds_the_usual_rest_of_the_day():
+    share = [0.0] * 24
+    share[7], share[18] = 0.6, 0.4
+    at = lambda h, m=0: dt.datetime(2026, 11, 12, h, m, tzinfo=TZ)
+    assert data.expected_total(30.0, 0.0, share, at(5)) == pytest.approx(30.0)
+    assert data.expected_total(30.0, 25.0, share, at(12)) == pytest.approx(25.0 + 12.0)
+    assert data.expected_total(30.0, 20.0, share, at(18, 30)) == pytest.approx(20.0 + 6.0)
+    assert data.expected_total(30.0, 40.0, share, at(23)) == pytest.approx(40.0)
+    assert data.expected_total(30.0, 5.0, None, at(12)) == 30.0

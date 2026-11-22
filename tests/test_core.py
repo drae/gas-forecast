@@ -142,6 +142,14 @@ def test_local_offset_needs_a_week():
     assert data.local_offset(few, main, today) is None
 
 
+def test_local_offset_is_a_median_of_two_weeks():
+    today = dt.date(2026, 11, 22)
+    main = {today - dt.timedelta(days=i): 5.0 for i in range(1, 40)}
+    local = {k: v + (0.5 if (today - k).days <= 14 else 3.0) for k, v in main.items()}
+    local[today - dt.timedelta(days=2)] = 8.0  # one sunny outlier
+    assert data.local_offset(local, main, today) == pytest.approx(0.5)
+
+
 def test_expected_total_adds_the_usual_rest_of_the_day():
     share = [0.0] * 24
     share[7], share[18] = 0.6, 0.4

@@ -181,6 +181,7 @@ async def test_gas_split_on_a_real_evening(hass: HomeAssistant):
     split_days = hass.states.get('sensor.gas_forecast_heating_today').attributes['days']
     assert sum(v['hot_water'] for v in split_days.values()) == pytest.approx(4.019, abs=1e-3)
     assert sum(v['boost'] for v in split_days.values()) == pytest.approx(5.136, abs=1e-3)
+    assert all(v['expected'] is None or v['expected'] >= 0 for v in split_days.values())
     kw = hass.states.get('sensor.gas_forecast_heating_today').attributes['kw']
     assert 14 < kw['dhw'] < 15 and 17 < kw['heat'] < 18
     assert await hass.config_entries.async_unload(entry.entry_id)

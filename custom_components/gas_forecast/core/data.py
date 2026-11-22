@@ -77,10 +77,15 @@ def hour_means(hours: dict[float, float], tz: ZoneInfo, missing: int = 1) -> dic
 
 
 def local_offset(local: dict[dt.date, float], main: dict[dt.date, float], today: dt.date,
-                 days: int = 30, min_days: int = 7) -> float | None:
-    """Mean of local minus main daily temperature over the last `days` days before today; None with too few."""
-    diffs = [local[k] - main[k] for k in local if k in main and today - dt.timedelta(days=days) <= k < today]
-    return sum(diffs) / len(diffs) if len(diffs) >= min_days else None
+                 days: int = 14, min_days: int = 7) -> float | None:
+    """Median of local minus main daily temperature over the last `days` days before today; None with too few.
+
+    The median shrugs off the odd sunny day that reads far above the weather."""
+    diffs = sorted(local[k] - main[k] for k in local if k in main and today - dt.timedelta(days=days) <= k < today)
+    if len(diffs) < min_days:
+        return None
+    n = len(diffs)
+    return diffs[n // 2] if n % 2 else (diffs[n // 2 - 1] + diffs[n // 2]) / 2
 
 
 def expected_total(forecast: float, used: float, share: list[float] | None, now: dt.datetime) -> float:

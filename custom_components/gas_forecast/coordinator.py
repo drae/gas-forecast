@@ -340,6 +340,13 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             saved['active'] = active
 
         m = models.get(active)
+        # heating gas the active model expects for each split day's recorded weather (less the usual non-heating gas)
+        base = gas.baseline(splits, today) or 0.0
+        expected = {}
+        for k in splits:
+            temp = gas.temp_of(recs, k)
+            if m and temp is not None:
+                expected[k.isoformat()] = max(0.0, m.predict(temp) - base)
         forecast = []
         for k in sorted(temps):
             temp = gas.temp_of(recs, k, temps)
@@ -359,7 +366,7 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
             'scores': {n: {k: (round(v, 2) if isinstance(v, float) else v) for k, v in s.items()} for n, s in scores.items()},
             'split_today': saved['split'].get(today.isoformat()),
             'split_yesterday': saved['split'].get((today - dt.timedelta(days=1)).isoformat()),
-            'split_days': self._split_days(saved, today),
+            'split_days': self._split_days(saved, today, expected),
             'split_info': split_info,
             'updated': now.isoformat(),
         }, rows
@@ -370,12 +377,14 @@ class GasForecastCoordinator(DataUpdateCoordinator[dict]):
         midnight = dt_util.start_of_local_day(today).timestamp()
         return next((r['state'] for r in gas_rows if r['start'] == midnight - 3600 and r.get('state') is not None), None)
 
-    def _split_days(self, saved: dict, today: dt.date) -> dict:
-        """The last SPLIT_ATTR_DAYS days of the split, rounded, for charts that cover more than the statistics do."""
+    def _split_days(self, saved: dict, today: dt.date, expected: dict[str, float]) -> dict:
+        """The last SPLIT_ATTR_DAYS days of the split, rounded, for charts that cover more than the statistics do;
+        `expected` is the heating gas the active model expects for the day's weather."""
         old = (today - dt.timedelta(days=SPLIT_ATTR_DAYS - 1)).isoformat()
         return {d: {'heating': round(v['heating'], 3), 'hot_water': round(v['hot_water'], 3),
                     'taps': round(v.get('taps', 0.0), 3), 'hob': round(v['hob'], 3),
-                    'boost': round(v.get('boost_heating', 0.0), 3), 'gas': round(v['gas'], 3), 'reliable': v.get('reliable')}
+                    'boost': round(v.get('boost_heating', 0.0), 3), 'gas': round(v['gas'], 3), 'reliable': v.get('reliable'),
+                    'expected': round(expected[d], 2) if d in expected else None}
                 for d, v in sorted(saved['split'].items()) if d >= old}
 
     def _prune(self, today: dt.date) -> None:
